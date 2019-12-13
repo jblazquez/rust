@@ -3391,6 +3391,7 @@ dependencies = [
  "bitflags",
  "cc",
  "jobserver",
+ "lazy_static 1.3.0",
  "libc",
  "log",
  "memmap",
