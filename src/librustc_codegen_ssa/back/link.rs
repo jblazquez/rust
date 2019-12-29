@@ -918,7 +918,48 @@ pub fn print_native_static_libs(sess: &Session, all_native_libs: &[NativeLibrary
     }
 }
 
+fn get_compiler_libs_path(sess: &Session) -> Option<PathBuf> {
+    use std::sync::Mutex;
+
+    lazy_static::lazy_static! {
+        static ref SYSTEM_LIBS: Mutex<Option<PathBuf>> = Mutex::new(None);
+    }
+
+    let system_libs = SYSTEM_LIBS.lock().unwrap().clone();
+    if let Some(compiler_libs_path) = system_libs {
+        println!("cache: hit");
+        return Some(compiler_libs_path);
+    } else {
+        println!("cache: miss");
+        let compiler = if let Some(linker) = &sess.opts.cg.linker {
+            linker.clone().into_os_string()
+        } else if let Some(linker) = &sess.target.target.options.linker {
+            linker.into()
+        } else {
+            return None;
+        };
+        if let Ok(output) = Command::new(compiler).arg("-print-file-name=crt2.o").output() {
+            if let Some(compiler_libs_path) =
+                PathBuf::from(std::str::from_utf8(&output.stdout).unwrap()).parent()
+            {
+                let compiler_libs_path = fix_windows_verbatim_for_gcc(compiler_libs_path);
+                *SYSTEM_LIBS.lock().unwrap() = Some(compiler_libs_path.clone());
+                return Some(compiler_libs_path);
+            }
+        }
+    }
+    None
+}
+
 pub fn get_file_path(sess: &Session, name: &str) -> PathBuf {
+    if sess.target.target.llvm_target.contains("windows-gnu") {
+        if let Some(compiler_libs_path) = get_compiler_libs_path(sess) {
+            let file_path = compiler_libs_path.join(name);
+            if file_path.exists() {
+                return file_path;
+            }
+        }
+    }
     let fs = sess.target_filesearch(PathKind::Native);
     let file_path = fs.get_lib_path().join(name);
     if file_path.exists() {
@@ -1099,6 +1140,12 @@ fn link_args<'a, B: ArchiveBuilder<'a>>(
 
     // target descriptor
     let t = &sess.target.target;
+
+    if sess.target.target.llvm_target.contains("windows-gnu") {
+        if let Some(compiler_libs_path) = get_compiler_libs_path(sess) {
+            cmd.include_path(&compiler_libs_path);
+        }
+    }
 
     cmd.include_path(&fix_windows_verbatim_for_gcc(&lib_path));
 
